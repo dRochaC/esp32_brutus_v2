@@ -34,6 +34,11 @@ BLECharacteristic *characteristicTX;
 BluetoothSerial SerialBT;
 
 bool deviceConnected = false;
+bool usbPort = false;
+bool lantern = false;
+bool internLeds = false;
+bool alarm = false;
+bool soundVolume = 0;
 
 // classes auxiliares
 
@@ -103,16 +108,24 @@ void initThreads() {
 void loop() {
 
   //ble.begin("Hello world");
-  SerialBT.println("iled0;lant1;");
+
+  String value = "";
+  while (SerialBT.available() > 0) {
+    value += (char)SerialBT.read();
+  }
+  if (value.length() != 0) {
+    Serial.println(value);
+  }
 
 }
 
 void Task1(void * parameter) {
 
   for (;;) {
-    unsigned long start = millis();   // ref: https://github.com/espressif/arduino-esp32/issues/384
 
-    Serial.println("Task 1 complete running on Core " + String(xPortGetCoreID()));
+    float randomTemp = random(5) + 25;
+    
+    SerialBT.println("iled0;lant1;temp" + String(randomTemp) + ";");
 
     delay(100) ;
   }
