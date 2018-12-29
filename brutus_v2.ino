@@ -15,12 +15,16 @@
 **/
 
 #include <BluetoothSerial.h>
+#include <Wire.h>
+#include <SSD1306.h>
 
 #define OBJ_INTERN_LED  "internLed"
 #define OBJ_LANTERN  "lantern"
 #define OBJ_TEMP  "temp"
 #define OBJ_ALARM  "alarm"
 #define OBJ_USB_PORT  "usbPort"
+#define OBJ_MODULES  "modules"
+
 #define OBJ_MODULE_1  "module1"
 
 #define MOCK_MODULE_1  true
@@ -28,6 +32,7 @@
 // Variaveis
 
 BluetoothSerial SerialBT;
+SSD1306  display(0x3c, 21, 22);
 
 long lastTime = 0;
 
@@ -38,6 +43,10 @@ bool lantern = false;
 float temp = 0;
 bool alarmSet = false;
 bool usbPort = false;
+bool modules = false;
+
+// Modulo mockado
+bool multiplier = false;
 
 // classes auxiliares
 
@@ -83,6 +92,9 @@ class Json {
     void putArray(String key, JsonArray jsonArray) {
       internPutValue(key, jsonArray.generate());
     }
+    void putArray(String key, String jsonArray) {
+      internPutValue(key, jsonArray);
+    }
     void putString(String key, String value) {
       internPutValue(key, putMarks(value));
     }
@@ -104,7 +116,14 @@ class Json {
 void setup() {
 
   Serial.begin(115200);
-  SerialBT.begin("BrutusV2");;
+  SerialBT.begin("BrutusV2");
+
+  display.init();
+  display.drawString(0, 0, "Brutus_v2");
+  display.drawString(0, 12, "Initializing...");
+  display.display();
+
+  pinMode(22, OUTPUT);
 }
 
 void loop() {
@@ -123,6 +142,10 @@ void loop() {
       alarmSet = integer;
     } else if (value.indexOf(OBJ_USB_PORT) == 0) {
       usbPort = integer;
+    } else if (value.indexOf(OBJ_MODULES) == 0) {
+      modules = integer;
+    } else if (value.indexOf("mocked_controller:multiplier") == 0) {
+      multiplier = integer;
     }
     Serial.println(value);
   }
@@ -134,35 +157,50 @@ void loop() {
     Json json;
     json.putBool(OBJ_INTERN_LED, internLeds);
     json.putBool(OBJ_LANTERN, lantern);
-    json.putBool(OBJ_TEMP, temp);
+    json.putFloat(OBJ_TEMP, temp);
     json.putBool(OBJ_ALARM, alarmSet);
     json.putBool(OBJ_USB_PORT, usbPort);
+    json.putBool(OBJ_MODULES, modules);
 
-    if (MOCK_MODULE_1) {
-      json.putArray(OBJ_MODULE_1, getMockedModule1());
+    String module1 = "[]";
+    if (MOCK_MODULE_1 && modules) {
+      module1 = getMockedModule1().generate();
     }
+
+    json.putArray(OBJ_MODULE_1, module1);
 
     SerialBT.println(json.generate());
     Serial.println(json.generate());
 
     lastTime = actualTime;
+
+    digitalWrite(22, !digitalRead(22));
   }
 }
 
 JsonArray getMockedModule1() {
 
   Json firstProperty;
+  firstProperty.putString("type", "INFO");
   firstProperty.putString("id", "mocked_controller");
   firstProperty.putString("name", "Mocked Controller");
-  firstProperty.putString("type", "INFO");
+  firstProperty.putString("color", "#c9c9ff");
+
+  String value = "10";
+  if (multiplier) {
+    value = "99999";
+  }
 
   Json command1Property;
-  command1Property.putString("type", "OUTPUT_INT");
-  command1Property.putString("value", "10");
+  command1Property.putString("type", "OUTPUT_VALUE");
+  command1Property.putString("label", "Valor de saída");
+  command1Property.putString("value", value);
 
   Json command2Property;
   command2Property.putString("type", "ACTION_SWITCH");
+  command2Property.putString("label", "Multiplicador");
   command2Property.putString("command", "multiplier");
+  command2Property.putBool("value", multiplier);
 
   JsonArray jsonArray;
   jsonArray.putElement(firstProperty.generate());
