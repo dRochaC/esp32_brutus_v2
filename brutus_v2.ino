@@ -14,130 +14,161 @@
 
 **/
 
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
-#include <SimpleBLE.h>
 #include <BluetoothSerial.h>
 
-#define SERVICE_UUID   "ab0828b1-198e-4351-b779-901fa0e0371e"
-#define CHARACTERISTIC_UUID_RX  "4ac8a682-9736-4e5d-932b-e9b31405049c"
-#define CHARACTERISTIC_UUID_TX  "0972EF8C-7613-4075-AD52-756F33D4DA91"
+#define OBJ_INTERN_LED  "internLed"
+#define OBJ_LANTERN  "lantern"
+#define OBJ_TEMP  "temp"
+#define OBJ_ALARM  "alarm"
+#define OBJ_USB_PORT  "usbPort"
+#define OBJ_MODULE_1  "module1"
+
+#define MOCK_MODULE_1  true
 
 // Variaveis
 
-TaskHandle_t TaskA, TaskB;
-BLECharacteristic *characteristicTX;
-
-//SimpleBLE ble;
 BluetoothSerial SerialBT;
 
+long lastTime = 0;
+
 bool deviceConnected = false;
-bool usbPort = false;
-bool lantern = false;
+
 bool internLeds = false;
-bool alarm = false;
-bool soundVolume = 0;
+bool lantern = false;
+float temp = 0;
+bool alarmSet = false;
+bool usbPort = false;
 
 // classes auxiliares
 
-// callback para receber os eventos de conexão de dispositivos
-class ServerCallbacks: public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer) {
-      deviceConnected = true;
-    };
+class JsonArray {
+  private:
+    String root = "";
+    int first = true;
 
-    void onDisconnect(BLEServer* pServer) {
-      deviceConnected = false;
+  public:
+    void putElement(String value) {
+      if (!first) {
+        root += ",";
+      }
+
+      root += value;
+
+      first = false;
+    }
+    String generate() {
+      return first ? "" : "[" + root + "]";
     }
 };
 
-//callback para eventos das características
-class CharacteristicCallbacks: public BLECharacteristicCallbacks {
-    void onWrite(BLECharacteristic *characteristic) {
+class Json {
+  private:
+    String root = "";
+    int first = true;
+    void internPutValue(String key, String value) {
 
-      //retorna ponteiro para o registrador contendo o valor atual da caracteristica
-      std::string rxValue = characteristic->getValue();
-
-      //verifica se existe dados (tamanho maior que zero)
-      if (rxValue.length() > 0) {
-
+      if (!first) {
+        root += ",";
       }
-    }//onWrite
+
+      root += "\"" + key + "\":" + value;
+
+      first = false;
+    }
+    String putMarks(String value) {
+      return "\"" + value + "\"";
+    }
+
+  public:
+    void putArray(String key, JsonArray jsonArray) {
+      internPutValue(key, jsonArray.generate());
+    }
+    void putString(String key, String value) {
+      internPutValue(key, putMarks(value));
+    }
+    void putFloat(String key, float value) {
+      internPutValue(key, String(value));
+    }
+    void putBool(String key, bool value) {
+      String nValue = "false";
+      if (value) {
+        nValue = "true";
+      }
+      internPutValue(key, putMarks(nValue));
+    }
+    String generate() {
+      return first ? "" : "{" + root + "}";
+    }
 };
 
 void setup() {
 
   Serial.begin(115200);
-
-  SerialBT.begin("BrutusV2");
-
-  //initBLE();
-  initThreads();
-}
-
-void initBLE() {
-
-  // Create the BLE Device
-  BLEDevice::init("brutus"); // nome do dispositivo bluetooth
-
-  // Create the BLE Server
-  BLEServer *server = BLEDevice::createServer(); //cria um BLE server
-
-  server->setCallbacks(new ServerCallbacks()); //seta o callback do server
-
-  // Create the BLE Service
-  BLEService *service = server->createService(SERVICE_UUID);
-
-  // Create a BLE Characteristic para envio de dados
-  characteristicTX = service->createCharacteristic(
-                       CHARACTERISTIC_UUID_TX,
-                       BLECharacteristic::PROPERTY_NOTIFY
-                     );
-
-  characteristicTX->addDescriptor(new BLE2902());
-}
-
-void initThreads() {
-
-  xTaskCreatePinnedToCore(Task1, "Workload1", 1000, NULL, 1, &TaskA, 0);
-  xTaskCreatePinnedToCore(Task2, "Workload2", 1000, NULL, 1, &TaskB, 1);
+  SerialBT.begin("BrutusV2");;
 }
 
 void loop() {
-
-  //ble.begin("Hello world");
 
   String value = "";
   while (SerialBT.available() > 0) {
     value += (char)SerialBT.read();
   }
   if (value.length() != 0) {
+    bool integer = value.charAt(value.length() - 3) == 49;
+    if (value.indexOf(OBJ_INTERN_LED) == 0) {
+      internLeds = integer;
+    } else if (value.indexOf(OBJ_LANTERN) == 0) {
+      lantern = integer;
+    } else if (value.indexOf(OBJ_ALARM) == 0) {
+      alarmSet = integer;
+    } else if (value.indexOf(OBJ_USB_PORT) == 0) {
+      usbPort = integer;
+    }
     Serial.println(value);
   }
 
-}
+  long actualTime = millis();
+  if (actualTime > lastTime + 1000) {
+    temp = random(5) + 25;
 
-void Task1(void * parameter) {
+    Json json;
+    json.putBool(OBJ_INTERN_LED, internLeds);
+    json.putBool(OBJ_LANTERN, lantern);
+    json.putBool(OBJ_TEMP, temp);
+    json.putBool(OBJ_ALARM, alarmSet);
+    json.putBool(OBJ_USB_PORT, usbPort);
 
-  for (;;) {
+    if (MOCK_MODULE_1) {
+      json.putArray(OBJ_MODULE_1, getMockedModule1());
+    }
 
-    float randomTemp = random(5) + 25;
-    
-    SerialBT.println("iled0;lant1;temp" + String(randomTemp) + ";");
+    SerialBT.println(json.generate());
+    Serial.println(json.generate());
 
-    delay(100) ;
+    lastTime = actualTime;
   }
 }
 
-void Task2(void * parameter) {
+JsonArray getMockedModule1() {
 
-  for (;;) {
-    unsigned long start = millis();   // ref: https://github.com/espressif/arduino-esp32/issues/384
+  Json firstProperty;
+  firstProperty.putString("id", "mocked_controller");
+  firstProperty.putString("name", "Mocked Controller");
+  firstProperty.putString("type", "INFO");
 
-    Serial.println("Task 2 complete running on Core " + String(xPortGetCoreID()));
+  Json command1Property;
+  command1Property.putString("type", "OUTPUT_INT");
+  command1Property.putString("value", "10");
 
-    delay(1000) ;
-  }
+  Json command2Property;
+  command2Property.putString("type", "ACTION_SWITCH");
+  command2Property.putString("command", "multiplier");
+
+  JsonArray jsonArray;
+  jsonArray.putElement(firstProperty.generate());
+  jsonArray.putElement(command1Property.generate());
+  jsonArray.putElement(command2Property.generate());
+
+  return jsonArray;
 }
+
