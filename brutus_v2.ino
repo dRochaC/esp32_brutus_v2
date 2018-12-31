@@ -18,10 +18,17 @@
 #include <Wire.h>
 #include <SSD1306.h>
 #include <Wtv020sd16p.h>
+#include <WiFi.h>
+#include <I2Cdev.h>
+#include <MPU6050.h>
+#include <EEPROM.h>
+//#include <ArduinoOTA.h>
 
 // Build configs
 #define MOCK_MODULE_1  true
 #define MOCK_MODULE_1_COMMAND  "mocked_controller:multiplier"
+#define BLUETOOTH_NAME  "BrutusV2"
+#define PRINT_ALL  true
 
 #define OBJ_INTERN_LED  "internLed"
 #define OBJ_LANTERN  "lantern"
@@ -32,25 +39,34 @@
 #define OBJ_VOLUME  "volume"
 #define OBJ_STOP_MUSIC  "stopMusic"
 #define OBJ_IS_PLAYING  "isPlaying"
+#define OBJ_WIFI  "wifi"
+#define OBJ_WIFI_NAME  "wifiName"
+#define OBJ_OTA  "ota"
 
 #define OBJ_MODULE_1  "module1"
 
 // Portas
-#define PORT_INTERN_LED  16
-#define PORT_LANTERN  17
-#define PORT_USB_PORT  32
-#define PORT_MODULES  33
+#define INTERN_LED_PIN  16
+#define PORT_LANTERN_PIN  17
+#define PORT_USB_PORT_PIN  32
+#define PORT_MODULES_PIN  33
 
-#define resetPin 19  //Pino Reset
-#define clockPin 18  //Pino clock
-#define dataPin 15   //Pino data (DI)
-#define busyPin 5    //Pino busy
+#define AUDIO_RESET_PIN 19
+#define AUDIO_CLOCK_PIN 18
+#define AUDIO_DATA_PIN 15
+#define AUDIO_BUSY_PIN 5
+
+#define MPU 0x68
 
 // Variaveis
 
+MPU6050 accelgyro;
+
 BluetoothSerial SerialBT;
+
 SSD1306  display(0x3c, 21, 22);
-Wtv020sd16p wtv020sd16p(resetPin, clockPin, dataPin, busyPin);
+
+Wtv020sd16p wtv020sd16p(AUDIO_RESET_PIN, AUDIO_CLOCK_PIN, AUDIO_DATA_PIN, AUDIO_BUSY_PIN);
 
 long lastTime = 0;
 
@@ -62,10 +78,20 @@ float temp = 0;
 bool alarmSet = false;
 bool usbPort = false;
 bool modules = false;
+bool wifiEnabled = false;
+bool otaEnabled = false;
 int volume = 4; // 50%
 
 // Modulo mockado
 bool multiplier = false;
+
+// Sensores inerciais
+int16_t ax, ay, az;
+int16_t gx, gy, gz;
+
+// Wifi
+const char* ssid = "NETvirtua102";
+const char* password =  "wificastro";
 
 // classes auxiliares
 
@@ -137,27 +163,40 @@ class Json {
 
 void setup() {
 
+  // Desabilita wifi
+  WiFi.mode(WIFI_MODE_NULL);
+  //btStop();
+
   Serial.begin(115200);
 
-  SerialBT.begin("BrutusV2");
-
   display.init();
-  display.drawString(0, 0, "Brutus_v2");
-  display.drawString(0, 12, "Initializing...");
+  display.drawString(0, 0, "booting...");
   display.display();
 
+  // Som de inicialização
   wtv020sd16p.reset();
   delay(1000);
-  Serial.println("playing");
+  appPrintln("booting...");
   playAudio(0);
 
-  pinMode(PORT_INTERN_LED, OUTPUT);
-  pinMode(PORT_LANTERN, OUTPUT);
-  pinMode(PORT_USB_PORT, OUTPUT);
-  pinMode(PORT_MODULES, OUTPUT);
+  SerialBT.begin(BLUETOOTH_NAME);
+
+  accelgyro.initialize();
+  String mpuMessage = accelgyro.testConnection() ? "InertialSensors...[OK]" : "InertialSensors...[ERROR]";
+  appPrintln(mpuMessage);
+  display.drawString(0, 12, mpuMessage);
+  display.display();
+
+  pinMode(INTERN_LED_PIN, OUTPUT);
+  pinMode(PORT_LANTERN_PIN, OUTPUT);
+  pinMode(PORT_USB_PORT_PIN, OUTPUT);
+  pinMode(PORT_MODULES_PIN, OUTPUT);
 }
 
 void loop() {
+
+  accelgyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+  temp = accelgyro.getTemperature() / 340.0 + 36.53;
 
   String value = "";
   while (SerialBT.available() > 0) {
@@ -174,17 +213,22 @@ void loop() {
 
     bool stopMusic = false;
     checkBoolCommand(value, OBJ_STOP_MUSIC, stopMusic);
-    stopMusic ? playAudio(1) : delay(0);
+    stopMusic ? playAudio(1) : yield();
+
+    checkBoolCommand(value, OBJ_WIFI, wifiEnabled);
+    wifiEnabled ? connectToWifi() : disableWifi();
+
+    checkBoolCommand(value, OBJ_OTA, otaEnabled);
+    otaEnabled ? enableOTA() : disableOTA();
 
     // mock
     checkBoolCommand(value, MOCK_MODULE_1_COMMAND, multiplier);
 
-    Serial.println(value);
+    appPrintln(value);
   }
 
   long actualTime = millis();
   if (actualTime > lastTime + 1000) {
-    temp = random(5) + 25;
 
     Json json;
     json.putBool(OBJ_INTERN_LED, internLeds);
@@ -194,7 +238,10 @@ void loop() {
     json.putBool(OBJ_USB_PORT, usbPort);
     json.putBool(OBJ_MODULES, modules);
     json.putInt(OBJ_VOLUME, volume);
-    json.putBool(OBJ_IS_PLAYING, (digitalRead(busyPin) == HIGH));
+    json.putBool(OBJ_IS_PLAYING, (digitalRead(AUDIO_BUSY_PIN) == HIGH));
+    json.putBool(OBJ_OTA, otaEnabled);
+    json.putBool(OBJ_WIFI, wifiEnabled);
+    json.putString(OBJ_WIFI_NAME, wifiEnabled ? ssid : " ");
 
     String module1 = "[]";
     if (MOCK_MODULE_1 && modules) {
@@ -204,19 +251,64 @@ void loop() {
     json.putArray(OBJ_MODULE_1, module1);
 
     SerialBT.println(json.generate());
-    Serial.println(json.generate());
+    appPrintln(json.generate());
 
     lastTime = actualTime;
   }
 
-  handleDigitalPortStatus(PORT_INTERN_LED, internLeds);
-  handleDigitalPortStatus(PORT_LANTERN, lantern);
-  handleDigitalPortStatus(PORT_USB_PORT, usbPort);
-  handleDigitalPortStatus(PORT_MODULES, modules);
+  handleDigitalPortStatus(INTERN_LED_PIN, internLeds);
+  handleDigitalPortStatus(PORT_LANTERN_PIN, lantern);
+  handleDigitalPortStatus(PORT_USB_PORT_PIN, usbPort);
+  handleDigitalPortStatus(PORT_MODULES_PIN, modules);
+
+  //ArduinoOTA.handle();
+}
+
+void connectToWifi() {
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    appPrintln("Establishing connection to WiFi..");
+  }
+
+  appPrintln("connected");
+}
+
+void disableWifi() {
+  WiFi.mode(WIFI_MODE_NULL);
+}
+
+void enableOTA() {
+  /*ArduinoOTA.begin();
+  ArduinoOTA.onStart([]() {
+    display.clear();
+    display.setFont(ArialMT_Plain_10);
+    display.setTextAlignment(TEXT_ALIGN_CENTER_BOTH);
+    display.drawString(display.getWidth() / 2, display.getHeight() / 2 - 10, "OTA Update");
+    display.display();
+  });
+
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    display.drawProgressBar(4, 32, 120, 8, progress / (total / 100) );
+    display.display();
+  });
+
+  ArduinoOTA.onEnd([]() {
+    display.clear();
+    display.setFont(ArialMT_Plain_10);
+    display.setTextAlignment(TEXT_ALIGN_CENTER_BOTH);
+    display.drawString(display.getWidth() / 2, display.getHeight() / 2, "Restart");
+    display.display();
+  });*/
+}
+
+void disableOTA() {
+  // usused
 }
 
 void playAudio(int file) {
-  if (digitalRead(busyPin) != HIGH) {
+  if (digitalRead(AUDIO_BUSY_PIN) != HIGH) {
     wtv020sd16p.reset();
     delay(200);
     wtv020sd16p.setVolume(volume);
@@ -280,5 +372,27 @@ JsonArray getMockedModule1() {
   return jsonArray;
 }
 
-void nothing();
+void appPrint(int value) {
+  if (PRINT_ALL) {
+    Serial.print(value);
+  }
+}
+
+void appPrintln(int value) {
+  if (PRINT_ALL) {
+    Serial.println(value);
+  }
+}
+
+void appPrint(String value) {
+  if (PRINT_ALL) {
+    Serial.print(value);
+  }
+}
+
+void appPrintln(String value) {
+  if (PRINT_ALL) {
+    Serial.println(value);
+  }
+}
 
