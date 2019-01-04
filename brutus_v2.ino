@@ -27,11 +27,14 @@
 // Build configs
 #define MOCK_MODULE_1  true
 #define MOCK_MODULE_1_COMMAND  "mocked_controller:multiplier"
+#define MOCK_DATA  true
 #define BLUETOOTH_NAME  "BrutusV2"
 #define PRINT_ALL  true
+#define SEND_DELAY 500
 
 #define OBJ_INTERN_LED  "internLed"
-#define OBJ_LANTERN  "lantern"
+#define OBJ_FRONT_LANTERN  "frontLantern"
+#define OBJ_BACK_LANTERN  "backLantern"
 #define OBJ_TEMP  "temp"
 #define OBJ_ALARM  "alarm"
 #define OBJ_USB_PORT  "usbPort"
@@ -42,12 +45,15 @@
 #define OBJ_WIFI  "wifi"
 #define OBJ_WIFI_NAME  "wifiName"
 #define OBJ_OTA  "ota"
+#define OBJ_BACKPACK_CONSUMPTION  "backpackConsumption"
+#define OBJ_SOLAR_CONSUMPTION  "solarConsumption"
 
 #define OBJ_MODULE_1  "module1"
 
 // Portas
 #define INTERN_LED_PIN  16
-#define PORT_LANTERN_PIN  17
+#define PORT_FRONT_LANTERN_PIN  17
+#define PORT_BACK_LANTERN_PIN  17 // a definir
 #define PORT_USB_PORT_PIN  32
 #define PORT_MODULES_PIN  33
 
@@ -73,7 +79,8 @@ long lastTime = 0;
 bool deviceConnected = false;
 
 bool internLeds = false;
-bool lantern = false;
+bool frontLantern = false;
+bool backLantern = false;
 float temp = 0;
 bool alarmSet = false;
 bool usbPort = false;
@@ -81,6 +88,8 @@ bool modules = false;
 bool wifiEnabled = false;
 bool otaEnabled = false;
 int volume = 4; // 50%
+float backpackConsumption = 0;
+float solarConsumption = 0;
 
 // Modulo mockado
 bool multiplier = false;
@@ -188,12 +197,26 @@ void setup() {
   display.display();
 
   pinMode(INTERN_LED_PIN, OUTPUT);
-  pinMode(PORT_LANTERN_PIN, OUTPUT);
+  pinMode(PORT_FRONT_LANTERN_PIN, OUTPUT);
+  pinMode(PORT_BACK_LANTERN_PIN, OUTPUT);
   pinMode(PORT_USB_PORT_PIN, OUTPUT);
   pinMode(PORT_MODULES_PIN, OUTPUT);
 }
 
 void loop() {
+
+  handleLoop();
+
+  handleDigitalPortStatus(INTERN_LED_PIN, internLeds);
+  handleDigitalPortStatus(PORT_FRONT_LANTERN_PIN, frontLantern);
+  handleDigitalPortStatus(PORT_BACK_LANTERN_PIN, backLantern);
+  handleDigitalPortStatus(PORT_USB_PORT_PIN, usbPort);
+  handleDigitalPortStatus(PORT_MODULES_PIN, modules);
+
+  //ArduinoOTA.handle();
+}
+
+void handleLoop() {
 
   accelgyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
   temp = accelgyro.getTemperature() / 340.0 + 36.53;
@@ -205,7 +228,8 @@ void loop() {
   if (value.length() != 0) {
 
     checkBoolCommand(value, OBJ_INTERN_LED, internLeds);
-    checkBoolCommand(value, OBJ_LANTERN, lantern);
+    checkBoolCommand(value, OBJ_FRONT_LANTERN, frontLantern);
+    checkBoolCommand(value, OBJ_BACK_LANTERN, backLantern);
     checkBoolCommand(value, OBJ_ALARM, alarmSet);
     checkBoolCommand(value, OBJ_USB_PORT, usbPort);
     checkBoolCommand(value, OBJ_MODULES, modules);
@@ -228,79 +252,90 @@ void loop() {
   }
 
   long actualTime = millis();
-  if (actualTime > lastTime + 1000) {
+  if (actualTime > lastTime + SEND_DELAY) {
 
-    Json json;
-    json.putBool(OBJ_INTERN_LED, internLeds);
-    json.putBool(OBJ_LANTERN, lantern);
-    json.putFloat(OBJ_TEMP, temp);
-    json.putBool(OBJ_ALARM, alarmSet);
-    json.putBool(OBJ_USB_PORT, usbPort);
-    json.putBool(OBJ_MODULES, modules);
-    json.putInt(OBJ_VOLUME, volume);
-    json.putBool(OBJ_IS_PLAYING, (digitalRead(AUDIO_BUSY_PIN) == HIGH));
-    json.putBool(OBJ_OTA, otaEnabled);
-    json.putBool(OBJ_WIFI, wifiEnabled);
-    json.putString(OBJ_WIFI_NAME, wifiEnabled ? ssid : " ");
-
-    String module1 = "[]";
-    if (MOCK_MODULE_1 && modules) {
-      module1 = getMockedModule1().generate();
-    }
-
-    json.putArray(OBJ_MODULE_1, module1);
-
-    SerialBT.println(json.generate());
-    appPrintln(json.generate());
+    sendData();
 
     lastTime = actualTime;
   }
+}
 
-  handleDigitalPortStatus(INTERN_LED_PIN, internLeds);
-  handleDigitalPortStatus(PORT_LANTERN_PIN, lantern);
-  handleDigitalPortStatus(PORT_USB_PORT_PIN, usbPort);
-  handleDigitalPortStatus(PORT_MODULES_PIN, modules);
+void sendData() {
 
-  //ArduinoOTA.handle();
+  if (MOCK_DATA) {
+    temp = random(100) / 20.0 + 25;
+    backpackConsumption = random(100) / 20.0 + 100;
+    solarConsumption = random(50) / 20.0 + 20;
+  }
+
+  Json json;
+  json.putBool(OBJ_INTERN_LED, internLeds);
+  json.putBool(OBJ_FRONT_LANTERN, frontLantern);
+  json.putBool(OBJ_BACK_LANTERN, backLantern);
+  json.putFloat(OBJ_TEMP, temp);
+  json.putBool(OBJ_ALARM, alarmSet);
+  json.putBool(OBJ_USB_PORT, usbPort);
+  json.putBool(OBJ_MODULES, modules);
+  json.putInt(OBJ_VOLUME, volume);
+  json.putBool(OBJ_IS_PLAYING, (digitalRead(AUDIO_BUSY_PIN) == HIGH));
+  json.putBool(OBJ_OTA, otaEnabled);
+  json.putBool(OBJ_WIFI, wifiEnabled);
+  json.putString(OBJ_WIFI_NAME, wifiEnabled ? ssid : " ");
+  json.putFloat(OBJ_BACKPACK_CONSUMPTION, backpackConsumption);
+  json.putFloat(OBJ_SOLAR_CONSUMPTION, solarConsumption);
+
+  String module1 = "[]";
+  if (MOCK_MODULE_1 && modules) {
+    module1 = getMockedModule1().generate();
+  }
+
+  json.putArray(OBJ_MODULE_1, module1);
+
+  SerialBT.println(json.generate());
+  appPrintln(json.generate());
 }
 
 void connectToWifi() {
   WiFi.begin(ssid, password);
 
   while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-    appPrintln("Establishing connection to WiFi..");
+    delay(100);
+    appPrint(".");
+
+    handleLoop();
   }
 
   appPrintln("connected");
+  wifiEnabled = true;
 }
 
 void disableWifi() {
   WiFi.mode(WIFI_MODE_NULL);
+  wifiEnabled = false;
 }
 
 void enableOTA() {
   /*ArduinoOTA.begin();
-  ArduinoOTA.onStart([]() {
+    ArduinoOTA.onStart([]() {
     display.clear();
     display.setFont(ArialMT_Plain_10);
     display.setTextAlignment(TEXT_ALIGN_CENTER_BOTH);
     display.drawString(display.getWidth() / 2, display.getHeight() / 2 - 10, "OTA Update");
     display.display();
-  });
+    });
 
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
     display.drawProgressBar(4, 32, 120, 8, progress / (total / 100) );
     display.display();
-  });
+    });
 
-  ArduinoOTA.onEnd([]() {
+    ArduinoOTA.onEnd([]() {
     display.clear();
     display.setFont(ArialMT_Plain_10);
     display.setTextAlignment(TEXT_ALIGN_CENTER_BOTH);
     display.drawString(display.getWidth() / 2, display.getHeight() / 2, "Restart");
     display.display();
-  });*/
+    });*/
 }
 
 void disableOTA() {
@@ -340,6 +375,30 @@ void handleDigitalPortStatus(int port, bool var) {
   digitalWrite(port, var);
 }
 
+void appPrint(int value) {
+  if (PRINT_ALL) {
+    Serial.print(value);
+  }
+}
+
+void appPrintln(int value) {
+  if (PRINT_ALL) {
+    Serial.println(value);
+  }
+}
+
+void appPrint(String value) {
+  if (PRINT_ALL) {
+    Serial.print(value);
+  }
+}
+
+void appPrintln(String value) {
+  if (PRINT_ALL) {
+    Serial.println(value);
+  }
+}
+
 JsonArray getMockedModule1() {
 
   Json firstProperty;
@@ -370,29 +429,5 @@ JsonArray getMockedModule1() {
   jsonArray.putElement(command2Property.generate());
 
   return jsonArray;
-}
-
-void appPrint(int value) {
-  if (PRINT_ALL) {
-    Serial.print(value);
-  }
-}
-
-void appPrintln(int value) {
-  if (PRINT_ALL) {
-    Serial.println(value);
-  }
-}
-
-void appPrint(String value) {
-  if (PRINT_ALL) {
-    Serial.print(value);
-  }
-}
-
-void appPrintln(String value) {
-  if (PRINT_ALL) {
-    Serial.println(value);
-  }
 }
 
