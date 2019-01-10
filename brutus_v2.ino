@@ -22,14 +22,13 @@
 #include <I2Cdev.h>
 #include <MPU6050.h>
 #include <EEPROM.h>
-//#include <ArduinoOTA.h>
+#include <ArduinoOTA.h>
 
 // Build configs
-#define MOCK_MODULE_1  true
+#define MOCK_MODULE_1  false
 #define MOCK_MODULE_1_COMMAND  "mocked_controller:multiplier"
-#define MOCK_DATA  true
 #define BLUETOOTH_NAME  "BrutusV2"
-#define PRINT_ALL  true
+#define PRINT_ALL  false
 #define SEND_DELAY 500
 
 #define OBJ_INTERN_LED  "internLed"
@@ -49,6 +48,9 @@
 #define OBJ_SOLAR_CONSUMPTION  "solarConsumption"
 
 #define OBJ_MODULE_1  "module1"
+
+#define ACS_OFFSET 2150
+#define ACS_VOLTAGE_PER_AMP 185
 
 // Portas
 #define INTERN_LED_PIN  16
@@ -90,6 +92,11 @@ bool otaEnabled = false;
 int volume = 4; // 50%
 float backpackConsumption = 0;
 float solarConsumption = 0;
+
+// Modulo
+String moduleData = "";
+String completeModuleData = "";
+bool isModuleConnected = false;
 
 // Modulo mockado
 bool multiplier = false;
@@ -196,11 +203,15 @@ void setup() {
   display.drawString(0, 12, mpuMessage);
   display.display();
 
+  analogReadResolution(12);
+
   pinMode(INTERN_LED_PIN, OUTPUT);
   pinMode(PORT_FRONT_LANTERN_PIN, OUTPUT);
   pinMode(PORT_BACK_LANTERN_PIN, OUTPUT);
   pinMode(PORT_USB_PORT_PIN, OUTPUT);
   pinMode(PORT_MODULES_PIN, OUTPUT);
+
+  Wire.begin();
 }
 
 void loop() {
@@ -213,10 +224,48 @@ void loop() {
   handleDigitalPortStatus(PORT_USB_PORT_PIN, usbPort);
   handleDigitalPortStatus(PORT_MODULES_PIN, modules);
 
-  //ArduinoOTA.handle();
+  ArduinoOTA.handle();
 }
 
 void handleLoop() {
+
+  int result = Wire.requestFrom(8, 32);
+
+  isModuleConnected = result != 0;
+  if (!isModuleConnected) {
+    moduleData = "";
+    completeModuleData = "";
+  }
+
+  while (Wire.available()) {
+    char c = Wire.read();
+    moduleData += String(c);
+  }
+
+  if (moduleData.length() != 0) {
+    int firstPos = moduleData.indexOf("[");
+    int lastPos = moduleData.indexOf("]", firstPos);
+
+    if (firstPos != -1 && lastPos != -1 && firstPos < lastPos) {
+
+      completeModuleData = moduleData.substring(firstPos, lastPos + 1);
+      moduleData = "";
+    }
+  }
+
+  if (moduleData.length() > 500) {
+    moduleData = "";
+  }
+
+  delay(200);
+
+  float allCurrentSensorVoltage = analogRead(36) * 3300 / 4096;
+  float voltageWithoutOffset = allCurrentSensorVoltage - ACS_OFFSET;
+  //allCurrentSensorVoltage = voltageWithoutOffset < 0 ? 0 : voltageWithoutOffset;
+  float allCurrent = (allCurrentSensorVoltage - ACS_OFFSET) / ACS_VOLTAGE_PER_AMP;
+  //appPrint(allCurrentSensorVoltage);
+  //appPrint(" ");
+  //appPrintln(allCurrent);
 
   accelgyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
   temp = accelgyro.getTemperature() / 340.0 + 36.53;
@@ -262,7 +311,7 @@ void handleLoop() {
 
 void sendData() {
 
-  if (MOCK_DATA) {
+  if (MOCK_MODULE_1) {
     temp = random(100) / 20.0 + 25;
     backpackConsumption = random(100) / 20.0 + 100;
     solarConsumption = random(50) / 20.0 + 20;
@@ -285,7 +334,10 @@ void sendData() {
   json.putFloat(OBJ_SOLAR_CONSUMPTION, solarConsumption);
 
   String module1 = "[]";
-  if (MOCK_MODULE_1 && modules) {
+  if (modules && isModuleConnected && completeModuleData.length() > 0) {
+    module1 = completeModuleData;
+  }
+  if (modules && MOCK_MODULE_1) {
     module1 = getMockedModule1().generate();
   }
 
@@ -315,27 +367,27 @@ void disableWifi() {
 }
 
 void enableOTA() {
-  /*ArduinoOTA.begin();
-    ArduinoOTA.onStart([]() {
+  ArduinoOTA.begin();
+  ArduinoOTA.onStart([]() {
     display.clear();
     display.setFont(ArialMT_Plain_10);
     display.setTextAlignment(TEXT_ALIGN_CENTER_BOTH);
     display.drawString(display.getWidth() / 2, display.getHeight() / 2 - 10, "OTA Update");
     display.display();
-    });
+  });
 
-    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
     display.drawProgressBar(4, 32, 120, 8, progress / (total / 100) );
     display.display();
-    });
+  });
 
-    ArduinoOTA.onEnd([]() {
+  ArduinoOTA.onEnd([]() {
     display.clear();
     display.setFont(ArialMT_Plain_10);
     display.setTextAlignment(TEXT_ALIGN_CENTER_BOTH);
     display.drawString(display.getWidth() / 2, display.getHeight() / 2, "Restart");
     display.display();
-    });*/
+  });
 }
 
 void disableOTA() {
@@ -430,4 +482,3 @@ JsonArray getMockedModule1() {
 
   return jsonArray;
 }
-
