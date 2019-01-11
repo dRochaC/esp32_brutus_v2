@@ -29,7 +29,9 @@
 #define MOCK_MODULE_1_COMMAND  "mocked_controller:multiplier"
 #define BLUETOOTH_NAME  "BrutusV2"
 #define PRINT_ALL  false
-#define SEND_DELAY 500
+#define SEND_DELAY 300
+
+#define MODULE_1_ADDRESS  0x08
 
 #define OBJ_INTERN_LED  "internLed"
 #define OBJ_FRONT_LANTERN  "frontLantern"
@@ -64,7 +66,7 @@
 #define AUDIO_DATA_PIN 15
 #define AUDIO_BUSY_PIN 5
 
-#define MPU 0x68
+#define MPU 0x69
 
 // Variaveis
 
@@ -229,9 +231,9 @@ void loop() {
 
 void handleLoop() {
 
-  int result = Wire.requestFrom(8, 32);
+  int result = Wire.requestFrom(MODULE_1_ADDRESS, 32);
 
-  isModuleConnected = result != 0;
+  isModuleConnected = result > 0;
   if (!isModuleConnected) {
     moduleData = "";
     completeModuleData = "";
@@ -256,8 +258,6 @@ void handleLoop() {
   if (moduleData.length() > 500) {
     moduleData = "";
   }
-
-  delay(200);
 
   float allCurrentSensorVoltage = analogRead(36) * 3300 / 4096;
   float voltageWithoutOffset = allCurrentSensorVoltage - ACS_OFFSET;
@@ -298,6 +298,22 @@ void handleLoop() {
     checkBoolCommand(value, MOCK_MODULE_1_COMMAND, multiplier);
 
     appPrintln(value);
+
+    int bufferSize = value.length();
+    if (bufferSize > 32) {
+      bufferSize = 32;
+    }
+
+    // Manda dado pro módulo conectado
+    uint8_t buffer[bufferSize];
+    for (int i = 0; i < bufferSize; i++) {
+      buffer[i] = value.charAt(i);
+      appPrintln(buffer[i]);
+    }
+
+    Wire.beginTransmission(MODULE_1_ADDRESS);
+    Wire.write(buffer, bufferSize);
+    Wire.endTransmission(true);
   }
 
   long actualTime = millis();
@@ -307,6 +323,8 @@ void handleLoop() {
 
     lastTime = actualTime;
   }
+
+  delay(100);
 }
 
 void sendData() {
