@@ -12,6 +12,8 @@
   &TaskA,                 pxCreatedTask
   0);                     xCoreID
 
+  Pinos 34 & 35 são apenas para input
+
 **/
 
 #include <BluetoothSerial.h>
@@ -37,10 +39,11 @@
 #define MODULE_1_ADDRESS  0x08
 
 #define OBJ_INTERN_LED  "internLed"
-#define OBJ_FRONT_LANTERN  "frontLantern"
+#define OBJ_AUTO_INTERN_LED  "autoInternLed"
 #define OBJ_BACK_LANTERN  "backLantern"
 #define OBJ_TEMP  "temp"
 #define OBJ_ALARM  "alarm"
+#define OBJ_ALARM_STATUS  "alarmStatus"
 #define OBJ_USB_PORT  "usbPort"
 #define OBJ_MODULES  "modules"
 #define OBJ_VOLUME  "volume"
@@ -59,16 +62,18 @@
 #define ACS_OFFSET 2060
 #define ACS_VOLTAGE_PER_AMP 185
 
+#define INTERN_LIGHT_SENSOR_THRESHOLD 3400
+
 // Portas
-#define INTERN_LED_PIN  16
-#define PORT_FRONT_LANTERN_PIN  17
-#define PORT_BACK_LANTERN_PIN  17 // a definir
+#define INTERN_LED_PIN  27
+#define INTERN_LED_LIGHT_SENSOR_PIN  34
+#define PORT_BACK_LANTERN_PIN  26
+#define AMPLIFIER_PIN 25
 #define PORT_USB_PORT_PIN  32
-#define PORT_MODULES_PIN  33
+#define PORT_MODULES_PIN  15
+
 #define ALL_CURRENT_PIN 36
 #define ALL_SOLAR_CURRENT_PIN 39
-
-#define MPU 0x69
 
 // Variaveis
 
@@ -85,15 +90,17 @@ long lastTime = 0;
 bool deviceConnected = false;
 
 bool internLeds = false;
-bool frontLantern = false;
+bool autoInternLed = false;
+int internLightSensor = 99999;
 bool backLantern = false;
 float temp = 0;
 bool alarmSet = false;
+bool alarmStatus = false;
 bool usbPort = false;
 bool modules = false;
 bool wifiEnabled = false;
 bool otaEnabled = false;
-int volume = 10; // 50%
+int volume = 30; // 50%
 float backpackConsumption = 0;
 float solarConsumption = 0;
 
@@ -110,7 +117,8 @@ bool isModuleConnected = false;
 bool multiplier = false;
 
 // Sensores inerciais
-int16_t ax, ay, az;
+int16_t ax = 0, ay = 0, az = 0;
+int16_t lastAx = 0, lastAy = 0, lastAz = 0;
 int16_t gx, gy, gz;
 
 // Wifi
@@ -251,9 +259,8 @@ void setup() {
   display.display();
 
   myDFPlayer.setTimeOut(500);
-  myDFPlayer.volume(10);
+  myDFPlayer.volume(volume);
   myDFPlayer.EQ(0);
-  myDFPlayer.play(1);
 
   // IMU initialization
   accelgyro.initialize();
@@ -266,22 +273,24 @@ void setup() {
   analogReadResolution(12);
 
   pinMode(INTERN_LED_PIN, OUTPUT);
-  pinMode(PORT_FRONT_LANTERN_PIN, OUTPUT);
   pinMode(PORT_BACK_LANTERN_PIN, OUTPUT);
   pinMode(PORT_USB_PORT_PIN, OUTPUT);
   pinMode(PORT_MODULES_PIN, OUTPUT);
+  pinMode(AMPLIFIER_PIN, OUTPUT);
 
   Wire.begin();
+
+  play(1);
 }
 
 void loop() {
 
   handleModuleData();
   handleSensorData();
+  handleAlarm();
   handleLoop();
 
   handleDigitalPortStatus(INTERN_LED_PIN, internLeds);
-  handleDigitalPortStatus(PORT_FRONT_LANTERN_PIN, frontLantern);
   handleDigitalPortStatus(PORT_BACK_LANTERN_PIN, backLantern);
   handleDigitalPortStatus(PORT_USB_PORT_PIN, usbPort);
   handleDigitalPortStatus(PORT_MODULES_PIN, modules);
@@ -299,7 +308,19 @@ void loop() {
   delay(100);
 }
 
+void handleAlarm() {
+
+  if (alarmSet) {
+
+  }
+}
+
 void handleSensorData() {
+
+  internLightSensor = analogRead(INTERN_LED_LIGHT_SENSOR_PIN);
+  if (autoInternLed) {
+    internLeds = internLightSensor > INTERN_LIGHT_SENSOR_THRESHOLD;
+  }
 
   allCurrent.update(analogRead(ALL_CURRENT_PIN) * 3300 / 4096);
   backpackConsumption = allCurrent.getAverage() - ACS_OFFSET;
@@ -308,10 +329,6 @@ void handleSensorData() {
   solarCurrent.update(analogRead(ALL_SOLAR_CURRENT_PIN) * 3300 / 4096);
   solarConsumption = solarCurrent.getAverage() - ACS_OFFSET;
   solarConsumption = adjustCurrent(solarConsumption);
-
-  appPrint(backpackConsumption);
-  appPrint(" ");
-  appPrintln(solarConsumption);
 
   if (isIMUOk) {
     accelgyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
@@ -349,11 +366,11 @@ void handleLoop() {
   if (value.length() != 0) {
 
     checkBoolCommand(value, OBJ_INTERN_LED, internLeds);
-    checkBoolCommand(value, OBJ_FRONT_LANTERN, frontLantern);
     checkBoolCommand(value, OBJ_BACK_LANTERN, backLantern);
     checkBoolCommand(value, OBJ_ALARM, alarmSet);
     checkBoolCommand(value, OBJ_USB_PORT, usbPort);
     checkBoolCommand(value, OBJ_MODULES, modules);
+    checkBoolCommand(value, OBJ_AUTO_INTERN_LED, autoInternLed);
 
     bool restart = false;
     checkBoolCommand(value, OBJ_RESTART, restart);
@@ -374,7 +391,7 @@ void handleLoop() {
 
     bool ironMan = false;
     checkBoolCommand(value, OBJ_IRON_MAN, ironMan);
-    ironMan ? myDFPlayer.play(1) : yield();
+    ironMan ? play(2) : yield();
 
     // mock
     checkBoolCommand(value, MOCK_MODULE_1_COMMAND, multiplier);
@@ -390,7 +407,6 @@ void handleLoop() {
     uint8_t buffer[bufferSize];
     for (int i = 0; i < bufferSize; i++) {
       buffer[i] = value.charAt(i);
-      appPrintln(buffer[i]);
     }
 
     Wire.beginTransmission(MODULE_1_ADDRESS);
@@ -430,6 +446,10 @@ void handleModuleData() {
   }
 }
 
+void play(int pos) {
+  myDFPlayer.play(pos);
+}
+
 void sendData() {
 
   if (MOCK_MODULE_1) {
@@ -440,8 +460,8 @@ void sendData() {
 
   Json json;
   json.putBool(OBJ_INTERN_LED, internLeds);
-  json.putBool(OBJ_FRONT_LANTERN, frontLantern);
   json.putBool(OBJ_BACK_LANTERN, backLantern);
+  json.putBool(OBJ_AUTO_INTERN_LED, autoInternLed);
   json.putFloat(OBJ_TEMP, temp);
   json.putBool(OBJ_ALARM, alarmSet);
   json.putBool(OBJ_USB_PORT, usbPort);
@@ -520,24 +540,24 @@ void disableOTA() {
 
 bool checkBoolCommand(String value, String command, bool& var) {
 
-  bool integer = value.charAt(value.length() - 3) == 49;
-
-  if (value.indexOf(command) == 0) {
-    var = integer;
+  int twoDotsIndex = value.indexOf(":");
+  if (twoDotsIndex != -1 && value.indexOf(command) == 0) {
+    String valueSub = value.substring(twoDotsIndex + 1, value.length());
+    var = valueSub.toInt() == 1;
   }
 }
 
 bool checkIntCommand(String value, String command, int& var) {
 
-  int integer = String(value.charAt(value.length() - 3)).toInt();
-
-  if (value.indexOf(command) == 0) {
-    var = integer;
+  int twoDotsIndex = value.indexOf(":");
+  if (twoDotsIndex != -1 && value.indexOf(command) == 0) {
+    String valueSub = value.substring(twoDotsIndex + 1, value.length());
+    var = valueSub.toInt();
   }
 }
 
 void handleDigitalPortStatus(int port, bool var) {
-  digitalWrite(port, var);
+  digitalWrite(port, var ? HIGH : LOW);
 }
 
 void appPrint(int value) {
