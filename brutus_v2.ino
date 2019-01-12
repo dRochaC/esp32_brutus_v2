@@ -23,13 +23,16 @@
 #include <MPU6050.h>
 #include <EEPROM.h>
 #include <ArduinoOTA.h>
+#include <DFRobotDFPlayerMini.h>
 
 // Build configs
-#define MOCK_MODULE_1  false
-#define MOCK_MODULE_1_COMMAND  "mocked_controller:multiplier"
-#define BLUETOOTH_NAME  "BrutusV2"
-#define PRINT_ALL  false
+#define MOCK_MODULE_1 false
+#define MOCK_MODULE_1_COMMAND "mocked_controller:multiplier"
+#define BLUETOOTH_NAME "BrutusV2"
+#define PRINT_ALL true
+#define PRINT_JSON false
 #define SEND_DELAY 300
+#define RAW_CURRENT false
 
 #define MODULE_1_ADDRESS  0x08
 
@@ -42,16 +45,18 @@
 #define OBJ_MODULES  "modules"
 #define OBJ_VOLUME  "volume"
 #define OBJ_STOP_MUSIC  "stopMusic"
-#define OBJ_IS_PLAYING  "isPlaying"
+#define OBJ_DF_PLAYER  "dfPlayer"
 #define OBJ_WIFI  "wifi"
 #define OBJ_WIFI_NAME  "wifiName"
 #define OBJ_OTA  "ota"
 #define OBJ_BACKPACK_CONSUMPTION  "backpackConsumption"
 #define OBJ_SOLAR_CONSUMPTION  "solarConsumption"
+#define OBJ_RESTART  "restartEsp"
+#define OBJ_IRON_MAN  "ironManMode"
 
 #define OBJ_MODULE_1  "module1"
 
-#define ACS_OFFSET 2150
+#define ACS_OFFSET 2060
 #define ACS_VOLTAGE_PER_AMP 185
 
 // Portas
@@ -60,11 +65,8 @@
 #define PORT_BACK_LANTERN_PIN  17 // a definir
 #define PORT_USB_PORT_PIN  32
 #define PORT_MODULES_PIN  33
-
-#define AUDIO_RESET_PIN 19
-#define AUDIO_CLOCK_PIN 18
-#define AUDIO_DATA_PIN 15
-#define AUDIO_BUSY_PIN 5
+#define ALL_CURRENT_PIN 36
+#define ALL_SOLAR_CURRENT_PIN 39
 
 #define MPU 0x69
 
@@ -76,7 +78,7 @@ BluetoothSerial SerialBT;
 
 SSD1306  display(0x3c, 21, 22);
 
-Wtv020sd16p wtv020sd16p(AUDIO_RESET_PIN, AUDIO_CLOCK_PIN, AUDIO_DATA_PIN, AUDIO_BUSY_PIN);
+DFRobotDFPlayerMini myDFPlayer;
 
 long lastTime = 0;
 
@@ -91,9 +93,13 @@ bool usbPort = false;
 bool modules = false;
 bool wifiEnabled = false;
 bool otaEnabled = false;
-int volume = 4; // 50%
+int volume = 10; // 50%
 float backpackConsumption = 0;
 float solarConsumption = 0;
+
+// Hardware Status
+bool isPlayerOk = false;
+bool isIMUOk = false;
 
 // Modulo
 String moduleData = "";
@@ -112,6 +118,47 @@ const char* ssid = "NETvirtua102";
 const char* password =  "wificastro";
 
 // classes auxiliares
+
+class Average {
+  private:
+    int numReadings = 20;
+    int readings[20];      // the readings from the analog input
+    int readIndex = 0;              // the index of the current reading
+    int total = 0;                  // the running total
+    int average = 0;
+
+  public:
+    Average() {
+      for (int thisReading = 0; thisReading < numReadings; thisReading++) {
+        readings[thisReading] = 0;
+      }
+    }
+    void update(float value) {
+      // subtract the last reading:
+      total = total - readings[readIndex];
+      // read from the sensor:
+      readings[readIndex] = value;
+      // add the reading to the total:
+      total = total + readings[readIndex];
+      // advance to the next position in the array:
+      readIndex = readIndex + 1;
+
+      // if we're at the end of the array...
+      if (readIndex >= numReadings) {
+        // ...wrap around to the beginning:
+        readIndex = 0;
+      }
+
+      // calculate the average:
+      average = total / numReadings;
+    }
+    int getAverage() {
+      return average;
+    }
+};
+
+Average allCurrent;
+Average solarCurrent;
 
 class JsonArray {
   private:
@@ -185,24 +232,35 @@ void setup() {
   WiFi.mode(WIFI_MODE_NULL);
   //btStop();
 
-  Serial.begin(115200);
+  Serial.begin(9600);
+
+  SerialBT.begin(BLUETOOTH_NAME);
 
   display.init();
   display.drawString(0, 0, "booting...");
   display.display();
 
-  // Som de inicialização
-  wtv020sd16p.reset();
-  delay(1000);
   appPrintln("booting...");
-  playAudio(0);
 
-  SerialBT.begin(BLUETOOTH_NAME);
+  // Sound System initialization
+  isPlayerOk = myDFPlayer.begin(Serial);
 
+  String playerMessage = isPlayerOk ? "Audio System...[OK]" : "Audio System...[ERROR]";
+  appPrintln(playerMessage);
+  display.drawString(0, 12, playerMessage);
+  display.display();
+
+  myDFPlayer.setTimeOut(500);
+  myDFPlayer.volume(10);
+  myDFPlayer.EQ(0);
+  myDFPlayer.play(1);
+
+  // IMU initialization
   accelgyro.initialize();
-  String mpuMessage = accelgyro.testConnection() ? "InertialSensors...[OK]" : "InertialSensors...[ERROR]";
+  isIMUOk = accelgyro.testConnection();
+  String mpuMessage = isIMUOk ? "InertialSensors...[OK]" : "InertialSensors...[ERROR]";
   appPrintln(mpuMessage);
-  display.drawString(0, 12, mpuMessage);
+  display.drawString(0, 24, mpuMessage);
   display.display();
 
   analogReadResolution(12);
@@ -218,6 +276,8 @@ void setup() {
 
 void loop() {
 
+  handleModuleData();
+  handleSensorData();
   handleLoop();
 
   handleDigitalPortStatus(INTERN_LED_PIN, internLeds);
@@ -227,9 +287,119 @@ void loop() {
   handleDigitalPortStatus(PORT_MODULES_PIN, modules);
 
   ArduinoOTA.handle();
+
+  long actualTime = millis();
+  if (actualTime > lastTime + SEND_DELAY) {
+
+    sendData();
+
+    lastTime = actualTime;
+  }
+
+  delay(100);
+}
+
+void handleSensorData() {
+
+  allCurrent.update(analogRead(ALL_CURRENT_PIN) * 3300 / 4096);
+  backpackConsumption = allCurrent.getAverage() - ACS_OFFSET;
+  backpackConsumption = adjustCurrent(backpackConsumption);
+
+  solarCurrent.update(analogRead(ALL_SOLAR_CURRENT_PIN) * 3300 / 4096);
+  solarConsumption = solarCurrent.getAverage() - ACS_OFFSET;
+  solarConsumption = adjustCurrent(solarConsumption);
+
+  appPrint(backpackConsumption);
+  appPrint(" ");
+  appPrintln(solarConsumption);
+
+  if (isIMUOk) {
+    accelgyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+    temp = accelgyro.getTemperature() / 340.0 + 36.53;
+  }
+}
+
+int adjustCurrent(int averageValue) {
+
+  if (RAW_CURRENT) {
+    return averageValue;
+  }
+
+  if (averageValue >= 50 && averageValue < 100) {
+    averageValue = 50;
+  } else if (averageValue >= 100 && averageValue < 150) {
+    averageValue = 100;
+  } else if (averageValue >= 150 && averageValue < 200) {
+    averageValue = 150;
+  } else if (averageValue >= 200 && averageValue < 250) {
+    averageValue = 200;
+  } else if (averageValue >= 250 && averageValue < 300) {
+    averageValue = 250;
+  } else if (averageValue < 50) {
+    averageValue = 0;
+  }
 }
 
 void handleLoop() {
+
+  String value = "";
+  while (SerialBT.available() > 0) {
+    value += (char)SerialBT.read();
+  }
+  if (value.length() != 0) {
+
+    checkBoolCommand(value, OBJ_INTERN_LED, internLeds);
+    checkBoolCommand(value, OBJ_FRONT_LANTERN, frontLantern);
+    checkBoolCommand(value, OBJ_BACK_LANTERN, backLantern);
+    checkBoolCommand(value, OBJ_ALARM, alarmSet);
+    checkBoolCommand(value, OBJ_USB_PORT, usbPort);
+    checkBoolCommand(value, OBJ_MODULES, modules);
+
+    bool restart = false;
+    checkBoolCommand(value, OBJ_RESTART, restart);
+    restart ? esp_restart() : yield();
+
+    checkIntCommand(value, OBJ_VOLUME, volume);
+    myDFPlayer.volume(volume);
+
+    bool stopMusic = false;
+    checkBoolCommand(value, OBJ_STOP_MUSIC, stopMusic);
+    stopMusic ? myDFPlayer.stop() : yield();
+
+    checkBoolCommand(value, OBJ_WIFI, wifiEnabled);
+    wifiEnabled ? connectToWifi() : disableWifi();
+
+    checkBoolCommand(value, OBJ_OTA, otaEnabled);
+    otaEnabled ? enableOTA() : disableOTA();
+
+    bool ironMan = false;
+    checkBoolCommand(value, OBJ_IRON_MAN, ironMan);
+    ironMan ? myDFPlayer.play(1) : yield();
+
+    // mock
+    checkBoolCommand(value, MOCK_MODULE_1_COMMAND, multiplier);
+
+    appPrintln(value);
+
+    int bufferSize = value.length();
+    if (bufferSize > 32) {
+      bufferSize = 32;
+    }
+
+    // Manda dado pro módulo conectado
+    uint8_t buffer[bufferSize];
+    for (int i = 0; i < bufferSize; i++) {
+      buffer[i] = value.charAt(i);
+      appPrintln(buffer[i]);
+    }
+
+    Wire.beginTransmission(MODULE_1_ADDRESS);
+    Wire.write(buffer, bufferSize);
+    Wire.endTransmission(true);
+  }
+}
+
+void handleModuleData() {
 
   int result = Wire.requestFrom(MODULE_1_ADDRESS, 32);
 
@@ -258,73 +428,6 @@ void handleLoop() {
   if (moduleData.length() > 500) {
     moduleData = "";
   }
-
-  float allCurrentSensorVoltage = analogRead(36) * 3300 / 4096;
-  float voltageWithoutOffset = allCurrentSensorVoltage - ACS_OFFSET;
-  //allCurrentSensorVoltage = voltageWithoutOffset < 0 ? 0 : voltageWithoutOffset;
-  float allCurrent = (allCurrentSensorVoltage - ACS_OFFSET) / ACS_VOLTAGE_PER_AMP;
-  //appPrint(allCurrentSensorVoltage);
-  //appPrint(" ");
-  //appPrintln(allCurrent);
-
-  accelgyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
-  temp = accelgyro.getTemperature() / 340.0 + 36.53;
-
-  String value = "";
-  while (SerialBT.available() > 0) {
-    value += (char)SerialBT.read();
-  }
-  if (value.length() != 0) {
-
-    checkBoolCommand(value, OBJ_INTERN_LED, internLeds);
-    checkBoolCommand(value, OBJ_FRONT_LANTERN, frontLantern);
-    checkBoolCommand(value, OBJ_BACK_LANTERN, backLantern);
-    checkBoolCommand(value, OBJ_ALARM, alarmSet);
-    checkBoolCommand(value, OBJ_USB_PORT, usbPort);
-    checkBoolCommand(value, OBJ_MODULES, modules);
-    checkIntCommand(value, OBJ_VOLUME, volume);
-
-    bool stopMusic = false;
-    checkBoolCommand(value, OBJ_STOP_MUSIC, stopMusic);
-    stopMusic ? playAudio(1) : yield();
-
-    checkBoolCommand(value, OBJ_WIFI, wifiEnabled);
-    wifiEnabled ? connectToWifi() : disableWifi();
-
-    checkBoolCommand(value, OBJ_OTA, otaEnabled);
-    otaEnabled ? enableOTA() : disableOTA();
-
-    // mock
-    checkBoolCommand(value, MOCK_MODULE_1_COMMAND, multiplier);
-
-    appPrintln(value);
-
-    int bufferSize = value.length();
-    if (bufferSize > 32) {
-      bufferSize = 32;
-    }
-
-    // Manda dado pro módulo conectado
-    uint8_t buffer[bufferSize];
-    for (int i = 0; i < bufferSize; i++) {
-      buffer[i] = value.charAt(i);
-      appPrintln(buffer[i]);
-    }
-
-    Wire.beginTransmission(MODULE_1_ADDRESS);
-    Wire.write(buffer, bufferSize);
-    Wire.endTransmission(true);
-  }
-
-  long actualTime = millis();
-  if (actualTime > lastTime + SEND_DELAY) {
-
-    sendData();
-
-    lastTime = actualTime;
-  }
-
-  delay(100);
 }
 
 void sendData() {
@@ -344,7 +447,7 @@ void sendData() {
   json.putBool(OBJ_USB_PORT, usbPort);
   json.putBool(OBJ_MODULES, modules);
   json.putInt(OBJ_VOLUME, volume);
-  json.putBool(OBJ_IS_PLAYING, (digitalRead(AUDIO_BUSY_PIN) == HIGH));
+  json.putBool(OBJ_DF_PLAYER, myDFPlayer.available());
   json.putBool(OBJ_OTA, otaEnabled);
   json.putBool(OBJ_WIFI, wifiEnabled);
   json.putString(OBJ_WIFI_NAME, wifiEnabled ? ssid : " ");
@@ -362,7 +465,10 @@ void sendData() {
   json.putArray(OBJ_MODULE_1, module1);
 
   SerialBT.println(json.generate());
-  appPrintln(json.generate());
+
+  if (PRINT_JSON) {
+    appPrintln(json.generate());
+  }
 }
 
 void connectToWifi() {
@@ -410,17 +516,6 @@ void enableOTA() {
 
 void disableOTA() {
   // usused
-}
-
-void playAudio(int file) {
-  if (digitalRead(AUDIO_BUSY_PIN) != HIGH) {
-    wtv020sd16p.reset();
-    delay(200);
-    wtv020sd16p.setVolume(volume);
-    delay(200);
-    wtv020sd16p.asyncPlayVoice(0);
-    delay(200);
-  }
 }
 
 bool checkBoolCommand(String value, String command, bool& var) {
