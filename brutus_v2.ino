@@ -53,9 +53,12 @@
 #define OBJ_WIFI_NAME  "wifiName"
 #define OBJ_OTA  "ota"
 #define OBJ_BACKPACK_CONSUMPTION  "backpackConsumption"
+#define OBJ_BACKPACK_CONSUMPTION_RAW  "backpackConsumptionRaw"
 #define OBJ_SOLAR_CONSUMPTION  "solarConsumption"
+#define OBJ_SOLAR_CONSUMPTION_RAW  "solarConsumptionRaw"
 #define OBJ_RESTART  "restartEsp"
 #define OBJ_IRON_MAN  "ironManMode"
+#define OBJ_PLAY_SONG  "playSong"
 
 #define OBJ_MODULE_1  "module1"
 
@@ -63,6 +66,8 @@
 #define ACS_VOLTAGE_PER_AMP 185
 
 #define INTERN_LIGHT_SENSOR_THRESHOLD 3400
+
+#define IMU_THRESHOLD 2000
 
 // Portas
 #define INTERN_LED_PIN  27
@@ -95,14 +100,20 @@ int internLightSensor = 99999;
 bool backLantern = false;
 float temp = 0;
 bool alarmSet = false;
+bool alarmConfigured = false;
 bool alarmStatus = false;
+bool alarmStart = false;
 bool usbPort = false;
 bool modules = false;
 bool wifiEnabled = false;
 bool otaEnabled = false;
 int volume = 30; // 50%
 float backpackConsumption = 0;
+float backpackConsumptionRaw = 0;
 float solarConsumption = 0;
+float solarConsumptionRaw = 0;
+
+long actualTime = 0;
 
 // Hardware Status
 bool isPlayerOk = false;
@@ -117,9 +128,7 @@ bool isModuleConnected = false;
 bool multiplier = false;
 
 // Sensores inerciais
-int16_t ax = 0, ay = 0, az = 0;
 int16_t lastAx = 0, lastAy = 0, lastAz = 0;
-int16_t gx, gy, gz;
 
 // Wifi
 const char* ssid = "NETvirtua102";
@@ -164,6 +173,21 @@ class Average {
       return average;
     }
 };
+
+class IMU {
+  public:
+    int16_t gx, gy, gz;
+    int16_t ax, ay, az;
+
+    void update(int16_t _ax, int16_t _ay, int16_t _az) {
+      ax = _ax;
+      ay = _ay;
+      az = _az;
+    }
+
+};
+
+IMU imu;
 
 Average allCurrent;
 Average solarCurrent;
@@ -252,6 +276,7 @@ void setup() {
 
   // Sound System initialization
   isPlayerOk = myDFPlayer.begin(Serial);
+  delay(500);
 
   String playerMessage = isPlayerOk ? "Audio System...[OK]" : "Audio System...[ERROR]";
   appPrintln(playerMessage);
@@ -285,10 +310,24 @@ void setup() {
 
 void loop() {
 
-  handleModuleData();
-  handleSensorData();
-  handleAlarm();
+  bool oneSecondDelay = oneSecondDelay();
+
   handleLoop();
+  handleTime();
+
+  if (alarmStatus) {
+    if (alarmStart) {
+      myDFPlayer.volume(30);
+      play(2);
+      alarmStart = false;
+    }
+
+    if (oneSecondDelay) {
+      digitalWrite(PORT_BACK_LANTERN_PIN, !digitalRead(PORT_BACK_LANTERN_PIN));
+    }
+
+    return;
+  }
 
   handleDigitalPortStatus(INTERN_LED_PIN, internLeds);
   handleDigitalPortStatus(PORT_BACK_LANTERN_PIN, backLantern);
@@ -297,22 +336,57 @@ void loop() {
 
   ArduinoOTA.handle();
 
-  long actualTime = millis();
-  if (actualTime > lastTime + SEND_DELAY) {
+  delay(100);
+}
+
+void handleTime() {
+
+  actualTime = millis();
+  if (oneSecondDelay()) {
 
     sendData();
 
     lastTime = actualTime;
   }
+}
 
-  delay(100);
+bool oneSecondDelay() {
+  return actualTime > lastTime + SEND_DELAY;
 }
 
 void handleAlarm() {
 
   if (alarmSet) {
 
+    // Salva valores default
+    if (!alarmConfigured) {
+      alarmConfigured = true;
+
+      lastAx = imu.ax;
+      lastAy = imu.ay;
+      lastAz = imu.az;
+    }
+
+    if ((checkAxisThreshold(lastAx, imu.ax) ||
+         checkAxisThreshold(lastAy, imu.ay) ||
+         checkAxisThreshold(lastAz, imu.az)) &&
+        !alarmStatus) {
+
+      // Ativa alarme
+      alarmStatus = true;
+      alarmStart = true;
+    }
+
+  } else {
+    alarmConfigured = false;
+    alarmStatus = false;
+    alarmStart = false;
   }
+}
+
+bool checkAxisThreshold(int16_t lastAxis, int16_t actualAxis) {
+  int16_t diff = abs(lastAxis - actualAxis);
+  return diff > IMU_THRESHOLD;
 }
 
 void handleSensorData() {
@@ -323,16 +397,21 @@ void handleSensorData() {
   }
 
   allCurrent.update(analogRead(ALL_CURRENT_PIN) * 3300 / 4096);
+  backpackConsumptionRaw = allCurrent.getAverage();
   backpackConsumption = allCurrent.getAverage() - ACS_OFFSET;
   backpackConsumption = adjustCurrent(backpackConsumption);
 
   solarCurrent.update(analogRead(ALL_SOLAR_CURRENT_PIN) * 3300 / 4096);
+  solarConsumptionRaw = solarCurrent.getAverage();
   solarConsumption = solarCurrent.getAverage() - ACS_OFFSET;
   solarConsumption = adjustCurrent(solarConsumption);
 
   if (isIMUOk) {
+    int16_t ax, ay, az, gx, gy, gz;
     accelgyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
     temp = accelgyro.getTemperature() / 340.0 + 36.53;
+
+    imu.update(ax, ay, az);
   }
 }
 
@@ -359,6 +438,14 @@ int adjustCurrent(int averageValue) {
 
 void handleLoop() {
 
+  handleModuleData();
+  handleSensorData();
+  handleAlarm();
+  handleBtData();
+}
+
+void handleBtData() {
+
   String value = "";
   while (SerialBT.available() > 0) {
     value += (char)SerialBT.read();
@@ -371,6 +458,12 @@ void handleLoop() {
     checkBoolCommand(value, OBJ_USB_PORT, usbPort);
     checkBoolCommand(value, OBJ_MODULES, modules);
     checkBoolCommand(value, OBJ_AUTO_INTERN_LED, autoInternLed);
+
+    bool lastAlarmStatus = alarmStatus;
+    checkBoolCommand(value, OBJ_ALARM_STATUS, alarmStatus);
+    if (!alarmStatus && lastAlarmStatus != alarmStatus) {
+      myDFPlayer.stop();
+    }
 
     bool restart = false;
     checkBoolCommand(value, OBJ_RESTART, restart);
@@ -391,7 +484,11 @@ void handleLoop() {
 
     bool ironMan = false;
     checkBoolCommand(value, OBJ_IRON_MAN, ironMan);
-    ironMan ? play(2) : yield();
+    ironMan ? play(3) : yield();
+
+    int playSongPos = 0;
+    checkIntCommand(value, OBJ_PLAY_SONG, playSongPos);
+    playSongPos > 0 ? play(playSongPos) : yield();
 
     // mock
     checkBoolCommand(value, MOCK_MODULE_1_COMMAND, multiplier);
@@ -464,6 +561,7 @@ void sendData() {
   json.putBool(OBJ_AUTO_INTERN_LED, autoInternLed);
   json.putFloat(OBJ_TEMP, temp);
   json.putBool(OBJ_ALARM, alarmSet);
+  json.putBool(OBJ_ALARM_STATUS, alarmStatus);
   json.putBool(OBJ_USB_PORT, usbPort);
   json.putBool(OBJ_MODULES, modules);
   json.putInt(OBJ_VOLUME, volume);
@@ -473,6 +571,8 @@ void sendData() {
   json.putString(OBJ_WIFI_NAME, wifiEnabled ? ssid : " ");
   json.putFloat(OBJ_BACKPACK_CONSUMPTION, backpackConsumption);
   json.putFloat(OBJ_SOLAR_CONSUMPTION, solarConsumption);
+  json.putFloat(OBJ_BACKPACK_CONSUMPTION_RAW, backpackConsumptionRaw);
+  json.putFloat(OBJ_SOLAR_CONSUMPTION_RAW, solarConsumptionRaw);
 
   String module1 = "[]";
   if (modules && isModuleConnected && completeModuleData.length() > 0) {
