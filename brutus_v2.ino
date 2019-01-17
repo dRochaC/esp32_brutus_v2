@@ -310,19 +310,24 @@ void setup() {
 
 void loop() {
 
-  bool oneSecondDelay = oneSecondDelay();
+  actualTime = millis();
+  bool oneSecond = oneSecondDelay();
 
   handleLoop();
   handleTime();
 
   if (alarmStatus) {
+
+    appPrint("AlarmStart: ");
+    appPrintln(alarmStart);
+
     if (alarmStart) {
       myDFPlayer.volume(30);
-      play(2);
+      play(3);
       alarmStart = false;
     }
 
-    if (oneSecondDelay) {
+    if (oneSecond) {
       digitalWrite(PORT_BACK_LANTERN_PIN, !digitalRead(PORT_BACK_LANTERN_PIN));
     }
 
@@ -341,7 +346,6 @@ void loop() {
 
 void handleTime() {
 
-  actualTime = millis();
   if (oneSecondDelay()) {
 
     sendData();
