@@ -104,7 +104,7 @@ bool alarmConfigured = false;
 bool alarmStatus = false;
 bool alarmStart = false;
 bool usbPort = false;
-bool modules = false;
+bool modules = true;
 bool wifiEnabled = false;
 bool otaEnabled = false;
 int volume = 30; // 50%
@@ -379,6 +379,11 @@ void handleAlarm() {
       // Ativa alarme
       alarmStatus = true;
       alarmStart = true;
+
+      String value = OBJ_ALARM_STATUS;
+      value.concat(":");
+      value.concat(String(alarmStatus));
+      sendDataToModule(value);
     }
 
   } else {
@@ -386,6 +391,7 @@ void handleAlarm() {
     alarmStatus = false;
     alarmStart = false;
   }
+
 }
 
 bool checkAxisThreshold(int16_t lastAxis, int16_t actualAxis) {
@@ -458,10 +464,15 @@ void handleBtData() {
 
     checkBoolCommand(value, OBJ_INTERN_LED, internLeds);
     checkBoolCommand(value, OBJ_BACK_LANTERN, backLantern);
-    checkBoolCommand(value, OBJ_ALARM, alarmSet);
     checkBoolCommand(value, OBJ_USB_PORT, usbPort);
     checkBoolCommand(value, OBJ_MODULES, modules);
     checkBoolCommand(value, OBJ_AUTO_INTERN_LED, autoInternLed);
+
+    bool lastAlarmSet = alarmSet;
+    checkBoolCommand(value, OBJ_ALARM, alarmSet);
+    if (lastAlarmSet != alarmSet) {
+      play(5);
+    }
 
     bool lastAlarmStatus = alarmStatus;
     checkBoolCommand(value, OBJ_ALARM_STATUS, alarmStatus);
@@ -488,7 +499,10 @@ void handleBtData() {
 
     bool ironMan = false;
     checkBoolCommand(value, OBJ_IRON_MAN, ironMan);
-    ironMan ? play(3) : yield();
+    if (ironMan) {
+      play(4);
+      backLantern = true;
+    }
 
     int playSongPos = 0;
     checkIntCommand(value, OBJ_PLAY_SONG, playSongPos);
@@ -499,21 +513,26 @@ void handleBtData() {
 
     appPrintln(value);
 
-    int bufferSize = value.length();
-    if (bufferSize > 32) {
-      bufferSize = 32;
-    }
-
-    // Manda dado pro módulo conectado
-    uint8_t buffer[bufferSize];
-    for (int i = 0; i < bufferSize; i++) {
-      buffer[i] = value.charAt(i);
-    }
-
-    Wire.beginTransmission(MODULE_1_ADDRESS);
-    Wire.write(buffer, bufferSize);
-    Wire.endTransmission(true);
+    sendDataToModule(value);
   }
+}
+
+void sendDataToModule(String value) {
+
+  int bufferSize = value.length();
+  if (bufferSize > 32) {
+    bufferSize = 32;
+  }
+
+  // Manda dado pro módulo conectado
+  uint8_t buffer[bufferSize];
+  for (int i = 0; i < bufferSize; i++) {
+    buffer[i] = value.charAt(i);
+  }
+
+  Wire.beginTransmission(MODULE_1_ADDRESS);
+  Wire.write(buffer, bufferSize);
+  Wire.endTransmission(true);
 }
 
 void handleModuleData() {
